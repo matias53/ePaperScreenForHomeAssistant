@@ -7,10 +7,8 @@ esp32:
   framework:
     type: esp-idf
 
-# Enable logging
 logger:
 
-# Enable Home Assistant API
 api:
   encryption:
     key: "9qrdCw3YvaKosDZL+JwukbpzpJjHmUNNntA5hOugw3s="
@@ -36,8 +34,6 @@ wifi:
 
 captive_portal:
 
-# ____________________________________________PASTE BELOW________________________________________________________________
-  
 globals:
   - id: wifi_status
     type: int
@@ -47,14 +43,14 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
-
-
-
-# # Here is deep sleep part
-# deep_sleep:
-#   id: deep_sleep_1
-#   run_duration: 1min  # Device wake up and run 60s (enough to pull data and update)
-#   sleep_duration: 60min  # deep sleep for 1h
+  - id: current_screen
+    type: int
+    restore_value: no
+    initial_value: "0"   # 0 = clima, 1 = calendario
+  - id: screen_timer
+    type: int
+    restore_value: no
+    initial_value: "0"
 
 script:
   - id: update_display
@@ -62,24 +58,35 @@ script:
       - component.update: my_display
 
 interval:
-  # Condition: wifi connected && data retrieved && first time
-  - interval: 10s  # Check every second
+  - interval: 1s
     then:
-      - if:
-          condition:
-            and:
-              - wifi.connected:
-              - lambda: "return !id(ha_calendar_event_1).state.empty();"
-              - lambda: "return !id(first_update_done);"
-          then:
-            - lambda: |-
-                ESP_LOGD("Display", "Updating Display...");
-            - script.execute: update_display  # Refresh immediately
-            - lambda: "id(first_update_done) = true;"
-  - interval: 59s  # run this command before 1s of run_duration end
-    then:
-      - logger.log: "Entering deep sleep now..."
+      - lambda: |-
+          // Primer update: esperar wifi + datos
+          if (!id(first_update_done)) {
+            if (id(wifi_status) == 1 && !id(ha_calendar_event_1).state.empty()) {
+              id(first_update_done) = true;
+              id(screen_timer) = 0;
+              id(update_display).execute();
+            }
+            return;
+          }
 
+          // Incrementar timer
+          id(screen_timer) += 1;
+
+          // Leer intervalo desde HA (default 30s si aún no llegó)
+          int interval_val = 30;
+          if (!id(switch_interval).state.empty()) {
+            interval_val = (int)atof(id(switch_interval).state.c_str());
+            if (interval_val < 5) interval_val = 5;
+          }
+
+          // Alternar pantalla al llegar al intervalo
+          if (id(screen_timer) >= interval_val) {
+            id(screen_timer) = 0;
+            id(current_screen) = (id(current_screen) == 0) ? 1 : 0;
+            id(update_display).execute();
+          }
 
 image:
   - file: image/wifi.jpg
@@ -88,12 +95,17 @@ image:
     resize: 400x240
     invert_alpha: true
 
-# Connect to Home Assistant to get time
 time:
   - platform: homeassistant
     id: homeassistant_time
 
 text_sensor:
+  # Intervalo de alternado (en segundos) desde HA
+  - platform: homeassistant
+    id: switch_interval
+    entity_id: input_number.epaper_switch_interval
+
+  # Calendario 1
   - platform: homeassistant
     id: ha_calendar_event_1
     entity_id: calendar.calefon_bano_social
@@ -107,6 +119,7 @@ text_sensor:
     entity_id: calendar.calefon_bano_social
     attribute: "end_time"
 
+  # Calendario 2
   - platform: homeassistant
     id: ha_calendar_event_2
     entity_id: calendar.calefon_cocina
@@ -120,6 +133,7 @@ text_sensor:
     entity_id: calendar.calefon_cocina
     attribute: "end_time"
 
+  # Calendario 3
   - platform: homeassistant
     id: ha_calendar_event_3
     entity_id: calendar.calefon_bano_suite
@@ -133,6 +147,7 @@ text_sensor:
     entity_id: calendar.calefon_bano_suite
     attribute: "end_time"
 
+  # Clima
   - platform: homeassistant
     entity_id: weather.forecast_home
     id: myWeather
@@ -155,38 +170,37 @@ text_sensor:
 
 font:
   - file: "fonts/Montserrat-Black.ttf"
-    id: web_font
+    id: font_small
     size: 20
   - file: "fonts/Montserrat-Black.ttf"
-    id: data_font
-    size: 30
+    id: font_medium
+    size: 28
   - file: "fonts/Montserrat-Black.ttf"
-    id: sensor_font
-    size: 22
+    id: font_large
+    size: 40
+  - file: "fonts/Montserrat-Black.ttf"
+    id: font_xlarge
+    size: 56
 
-  - file: "gfonts://Inter@700" #
-    id: font1
-    size: 24
-
-  - file: 'fonts/materialdesignicons-webfont.ttf' # Directory to save ttf file
+  - file: 'fonts/materialdesignicons-webfont.ttf'
     id: font_mdi_large
     size: 200
-    glyphs: &mdi-weather-glyphs # https://pictogrammers.com/library/mdi/
+    glyphs: &mdi-weather-glyphs
       - "\U000F050F" # Thermometer
       - "\U000F058E" # Humidity
       - "\U000F059D" # Wind speed
       - "\U000F0D60" # Atmospheric pressure
-      - "\U000F0590" # Cloudy weather
-      - "\U000F0596" # Rainy weather
-      - "\U000F0598" # Snowy weather
-      - "\U000F0599" # Sunny weather
+      - "\U000F0590" # Cloudy
+      - "\U000F0596" # Rainy
+      - "\U000F0598" # Snowy
+      - "\U000F0599" # Sunny
   - file: 'fonts/materialdesignicons-webfont.ttf'
-    id: font_weather # Copy the above icon and change the size to 40
-    size: 200
+    id: font_weather_big
+    size: 260
     glyphs: *mdi-weather-glyphs
   - file: 'fonts/materialdesignicons-webfont.ttf'
-    id: img_font_sensor # Copy the above icon and change the size to 40
-    size: 70
+    id: font_icon_med
+    size: 60
     glyphs: *mdi-weather-glyphs
 
 spi:
@@ -198,216 +212,200 @@ display:
     id: my_display
     cs_pin: GPIO3
     dc_pin: GPIO5
-    busy_pin: 
+    busy_pin:
       number: GPIO4
       inverted: true
     reset_pin: GPIO2
     model: 7.50inv2
-    update_interval: 50s
+    update_interval: never
     lambda: |-
-      if(id(wifi_status) == 0){
+
+      // ══════════════════════════════════════════════════════
+      //  SIN WIFI
+      // ══════════════════════════════════════════════════════
+      if (id(wifi_status) == 0) {
         it.image(180, 0, id(esphome_logo));
-        it.print(230, 300, id(data_font), "WI-FI CONNECTING");
-      }else{
-        // Draw weather images here
-        std::string weather_string = id(myWeather).state.c_str();
-        if(weather_string == "rainy" || weather_string == "lightning" || weather_string == "pouring"){
-          // Draw rainy weather image
-          it.printf(120, 85, id(font_weather), TextAlign::CENTER, "\U000F0596");
-        }else if(weather_string == "snowy"){
-          // Draw snowy weather image
-          it.printf(120, 85, id(font_weather), TextAlign::CENTER, "\U000F0598");
-        }else if(weather_string == "sunny" || weather_string == "windy"){
-          // Draw sunny weather image
-          it.printf(120, 85, id(font_weather), TextAlign::CENTER, "\U000F0599");
-        }else{
-          // Draw cloudy weather image
-          it.printf(120, 85, id(font_weather), TextAlign::CENTER, "\U000F0590");
-        }
-
-        auto time_now = id(homeassistant_time).now();
-        // Month conversion
-        const char* months[] = {
-          "January", "February", "March", "April", "May", "June",
-          "July", "August", "September", "October", "November", "December"
-        };
-        const char* month_str = months[time_now.month - 1];  // Month index starts from 0
-        // Get the day
-        int day = time_now.day_of_month;
-        // Draw the date
-        it.printf(250, 110, id(data_font), "%s %d", month_str, day);
-        // Get the day of the week
-        const char* days[] = {"Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
-        const char* day_of_week = days[time_now.day_of_week];
-        it.printf(250, 70, id(data_font), "%s", day_of_week);
-
-        int x = 20, y = 180, w = 180, h = 120, r = 10, thickness = 4;
-        // Draw four borders
-        it.filled_rectangle(x + r, y, w - 2 * r, thickness); // Top border
-        it.filled_rectangle(x + r, y + h - thickness, w - 2 * r, thickness); // Bottom border
-        it.filled_rectangle(x, y + r, thickness, h - 2 * r); // Left border
-        it.filled_rectangle(x + w - thickness, y + r, thickness, h - 2 * r); // Right border
-        // Draw four rounded corners
-        it.filled_circle(x + r, y + r, r); // Top-left corner
-        it.filled_circle(x + w - r, y + r, r); // Top-right corner
-        it.filled_circle(x + r, y + h - r, r); // Bottom-left corner
-        it.filled_circle(x + w - r, y + h - r, r); // Bottom-right corner
-        // Fill the inside with black to form a border
-        it.filled_rectangle(x + thickness, y + thickness, w - 2 * thickness, h - 2 * thickness, COLOR_OFF);
-        // Temperature
-        it.printf(x+10, y+10, id(sensor_font), "Temperature");
-        it.printf(x+45, y+75, id(img_font_sensor), TextAlign::CENTER, "\U000F050F");
-        // Get temperature data
-        it.printf(x+75,y+65, id(data_font), "%s°C", id(temp).state.c_str());
-
-        x = 220;
-        y = 180;
-        // Draw four borders
-        it.filled_rectangle(x + r, y, w - 2 * r, thickness); // Top border
-        it.filled_rectangle(x + r, y + h - thickness, w - 2 * r, thickness); // Bottom border
-        it.filled_rectangle(x, y + r, thickness, h - 2 * r); // Left border
-        it.filled_rectangle(x + w - thickness, y + r, thickness, h - 2 * r); // Right border
-        // Draw four rounded corners
-        it.filled_circle(x + r, y + r, r); // Top-left corner
-        it.filled_circle(x + w - r, y + r, r); // Top-right corner
-        it.filled_circle(x + r, y + h - r, r); // Bottom-left corner
-        it.filled_circle(x + w - r, y + h - r, r); // Bottom-right corner
-        // Fill the inside with black to form a border
-        it.filled_rectangle(x + thickness, y + thickness, w - 2 * thickness, h - 2 * thickness, COLOR_OFF);
-        // Humidity
-        it.printf(x+10, y+10, id(sensor_font), "Humidity");
-        it.printf(x+45, y+75, id(img_font_sensor), TextAlign::CENTER, "\U000F058E");
-        // Get humidity data
-        it.printf(x+75,y+65, id(data_font), "%s%%", id(humi).state.c_str());
-
-        x = 20;
-        y = 320;
-        // Draw four borders
-        it.filled_rectangle(x + r, y, w - 2 * r, thickness); // Top border
-        it.filled_rectangle(x + r, y + h - thickness, w - 2 * r, thickness); // Bottom border
-        it.filled_rectangle(x, y + r, thickness, h - 2 * r); // Left border
-        it.filled_rectangle(x + w - thickness, y + r, thickness, h - 2 * r); // Right border
-        // Draw four rounded corners
-        it.filled_circle(x + r, y + r, r); // Top-left corner
-        it.filled_circle(x + w - r, y + r, r); // Top-right corner
-        it.filled_circle(x + r, y + h - r, r); // Bottom-left corner
-        it.filled_circle(x + w - r, y + h - r, r); // Bottom-right corner
-        // Fill the inside with black to form a border
-        it.filled_rectangle(x + thickness, y + thickness, w - 2 * thickness, h - 2 * thickness, COLOR_OFF);
-        // Air Pressure
-        it.printf(x+10, y+10, id(sensor_font), "Air Pressure");
-        it.printf(x+45, y+75, id(img_font_sensor), TextAlign::CENTER, "\U000F0D60");
-        // Get atmospheric pressure data
-        it.printf(x+85,y+50, id(data_font), "%s", id(press).state.c_str());
-        it.printf(x+85,y+78, id(sensor_font), "hPA");
-
-        x = 220;
-        y = 320;
-        // Draw four borders
-        it.filled_rectangle(x + r, y, w - 2 * r, thickness); // Top border
-        it.filled_rectangle(x + r, y + h - thickness, w - 2 * r, thickness); // Bottom border
-        it.filled_rectangle(x, y + r, thickness, h - 2 * r); // Left border
-        it.filled_rectangle(x + w - thickness, y + r, thickness, h - 2 * r); // Right border
-        // Draw four rounded corners
-        it.filled_circle(x + r, y + r, r); // Top-left corner
-        it.filled_circle(x + w - r, y + r, r); // Top-right corner
-        it.filled_circle(x + r, y + h - r, r); // Bottom-left corner
-        it.filled_circle(x + w - r, y + h - r, r); // Bottom-right corner
-        // Fill the inside with black to form a border
-        it.filled_rectangle(x + thickness, y + thickness, w - 2 * thickness, h - 2 * thickness, COLOR_OFF);
-        // Wind Speed
-        it.printf(x+10, y+10, id(sensor_font), "Wind Speed");
-        it.printf(x+45, y+75, id(img_font_sensor), TextAlign::CENTER, "\U000F059D");
-        // Get wind speed data
-        it.printf(x+85,y+50, id(data_font), "%s", id(wind).state.c_str());
-        it.printf(x+85,y+78, id(sensor_font), "km/h");
-
-        // Draw a vertical line
-        it.filled_rectangle(430, 30, 5, 430);
-        // Right section
-        it.printf(540, 40, id(data_font), "Calendar");
-
-        // Define event structure
-        struct Event {
-            std::string message;
-            std::string start_time;
-            std::string end_time;
-            time_t start_timestamp;
-        };
-
-        // Parse time string to time_t (UNIX timestamp)
-        auto parse_time = [](const std::string &time_str) -> time_t {
-            struct tm timeinfo = {};
-            if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr) {
-                return 0;  // Invalid time
-            }
-            return mktime(&timeinfo);
-        };
-
-        // Create event list
-        std::vector<Event> events = {
-            {id(ha_calendar_event_1).state, id(ha_calendar_start_time_1).state, id(ha_calendar_end_time_1).state, parse_time(id(ha_calendar_start_time_1).state)},
-            {id(ha_calendar_event_2).state, id(ha_calendar_start_time_2).state, id(ha_calendar_end_time_2).state, parse_time(id(ha_calendar_start_time_2).state)},
-            {id(ha_calendar_event_3).state, id(ha_calendar_start_time_3).state, id(ha_calendar_end_time_3).state, parse_time(id(ha_calendar_start_time_3).state)}
-        };
-        ESP_LOGD("myCalendar", "Start Time: %s -> %ld", id(ha_calendar_start_time_1).state.c_str(), parse_time(id(ha_calendar_start_time_1).state));
-        ESP_LOGD("myCalendar", "Start Time: %s -> %ld", id(ha_calendar_start_time_2).state.c_str(), parse_time(id(ha_calendar_start_time_2).state));
-        ESP_LOGD("myCalendar", "Start Time: %s -> %ld", id(ha_calendar_start_time_3).state.c_str(), parse_time(id(ha_calendar_start_time_3).state));
-
-        // Filter invalid events (start_timestamp == 0)
-        events.erase(std::remove_if(events.begin(), events.end(), [](const Event &e) { return e.start_timestamp == 0; }), events.end());
-
-        // Sort by `start_timestamp` (earliest to latest)
-        std::sort(events.begin(), events.end(), [](const Event &a, const Event &b) {
-            return a.start_timestamp < b.start_timestamp;
-        });
-
-        // Define a function to format time
-        auto format_time = [](std::string time_str) -> std::string {
-            struct tm timeinfo;
-            if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr) {
-                return "Invalid";
-            }
-            char buffer[10];
-            strftime(buffer, sizeof(buffer), "%I:%M%p", &timeinfo); // Convert to 12-hour format
-            return std::string(buffer);
-        };
-        // Parse date
-        auto format_date = [](const std::string &time_str) -> std::string {
-            struct tm timeinfo = {};
-            if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr) {
-                return "Invalid";
-            }
-            char buffer[6];  // Need to store "MM-DD\0"
-            strftime(buffer, sizeof(buffer), "%m-%d", &timeinfo);
-            return std::string(buffer);
-        };
-
-        // Draw events
-        int even_x_start_offset = 460;
-        int even_y_start_offset = 80;
-        for (const auto &event : events) {
-          if(even_y_start_offset >= 420){
-            break;
-          }
-
-          // Format time
-          std::string formatted_date = format_date(event.start_time);
-          std::string formatted_start_time = format_time(event.start_time);
-          std::string formatted_end_time = format_time(event.end_time);
-
-          // Combine time range string
-          std::string time_range = formatted_start_time + " - " + formatted_end_time;
-          time_range = formatted_date + "  " + time_range;
-          if(formatted_start_time == "Invalid" || formatted_end_time == "Invalid"){
-            time_range.clear();
-          }
-          // Display time range, e.g., "10:00AM - 11:00AM"
-          it.printf(even_x_start_offset, even_y_start_offset, id(sensor_font), "%s", time_range.c_str());
-          even_y_start_offset += 30;
-          // Display event name
-          it.printf(even_x_start_offset, even_y_start_offset, id(sensor_font), "%s", event.message.c_str());
-          even_y_start_offset += 40;
-        }
+        it.print(230, 300, id(font_medium), "WI-FI CONNECTING");
+        return;
       }
 
+      // ══════════════════════════════════════════════════════
+      //  HELPERS COMPARTIDOS
+      // ══════════════════════════════════════════════════════
+      auto parse_time_fn = [](const std::string &time_str) -> time_t {
+        struct tm timeinfo = {};
+        if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr)
+          return 0;
+        return mktime(&timeinfo);
+      };
+
+      auto format_time_fn = [](const std::string &time_str) -> std::string {
+        struct tm timeinfo = {};
+        if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr)
+          return "Invalid";
+        char buffer[10];
+        strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
+        return std::string(buffer);
+      };
+
+      auto format_date_fn = [](const std::string &time_str) -> std::string {
+        struct tm timeinfo = {};
+        if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr)
+          return "Invalid";
+        char buffer[6];
+        strftime(buffer, sizeof(buffer), "%d/%m", &timeinfo);
+        return std::string(buffer);
+      };
+
+      // ══════════════════════════════════════════════════════
+      //  PANTALLA 0 — CLIMA (800×480 completo)
+      // ══════════════════════════════════════════════════════
+      if (id(current_screen) == 0) {
+
+        // --- Ícono de clima (izquierda, grande) ---
+        std::string ws = id(myWeather).state.c_str();
+        if (ws == "rainy" || ws == "lightning" || ws == "pouring") {
+          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0596");
+        } else if (ws == "snowy") {
+          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0598");
+        } else if (ws == "sunny" || ws == "windy") {
+          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0599");
+        } else {
+          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0590");
+        }
+
+        // --- Fecha y día (centro-arriba) ---
+        auto time_now = id(homeassistant_time).now();
+        const char* months_es[] = {
+          "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+        };
+        const char* days_es[] = {
+          "Sabado","Domingo","Lunes","Martes","Miercoles","Jueves","Viernes"
+        };
+        it.printf(490, 30, id(font_medium), TextAlign::CENTER, "%s", days_es[time_now.day_of_week]);
+        it.printf(490, 75, id(font_large),  TextAlign::CENTER, "%s %d", months_es[time_now.month - 1], time_now.day_of_month);
+
+        // Línea separadora horizontal
+        it.filled_rectangle(320, 120, 460, 3);
+
+        // --- Temperatura grande (centro) ---
+        it.printf(490, 160, id(font_xlarge), TextAlign::CENTER, "%s°C", id(temp).state.c_str());
+
+        // --- 4 datos clima en 2 columnas (abajo) ---
+        // Temperatura / Humedad / Presión / Viento
+        int bx[2] = {325, 615};
+        int by[2] = {270, 380};
+        int bw = 270, bh = 90, r2 = 8, th2 = 3;
+
+        for (int col = 0; col < 2; col++) {
+          for (int row = 0; row < 2; row++) {
+            int x = bx[col], y = by[row], w = bw, h = bh;
+            it.filled_rectangle(x + r2, y, w - 2*r2, th2);
+            it.filled_rectangle(x + r2, y + h - th2, w - 2*r2, th2);
+            it.filled_rectangle(x, y + r2, th2, h - 2*r2);
+            it.filled_rectangle(x + w - th2, y + r2, th2, h - 2*r2);
+            it.filled_circle(x + r2, y + r2, r2);
+            it.filled_circle(x + w - r2, y + r2, r2);
+            it.filled_circle(x + r2, y + h - r2, r2);
+            it.filled_circle(x + w - r2, y + h - r2, r2);
+            it.filled_rectangle(x + th2, y + th2, w - 2*th2, h - 2*th2, COLOR_OFF);
+          }
+        }
+
+        // Humedad (col0 row0)
+        it.printf(bx[0]+10, by[0]+8,  id(font_small),  "Humedad");
+        it.printf(bx[0]+36, by[0]+45, id(font_icon_med), TextAlign::CENTER, "\U000F058E");
+        it.printf(bx[0]+80, by[0]+45, id(font_medium), "%s%%", id(humi).state.c_str());
+
+        // Viento (col0 row1)
+        it.printf(bx[0]+10, by[1]+8,  id(font_small),  "Viento");
+        it.printf(bx[0]+36, by[1]+45, id(font_icon_med), TextAlign::CENTER, "\U000F059D");
+        it.printf(bx[0]+80, by[1]+45, id(font_medium), "%s km/h", id(wind).state.c_str());
+
+        // Presión (col1 row0)
+        it.printf(bx[1]+10, by[0]+8,  id(font_small),  "Presion");
+        it.printf(bx[1]+36, by[0]+45, id(font_icon_med), TextAlign::CENTER, "\U000F0D60");
+        it.printf(bx[1]+80, by[0]+38, id(font_medium), "%s", id(press).state.c_str());
+        it.printf(bx[1]+80, by[0]+64, id(font_small),  "hPa");
+
+        // Descripción clima (col1 row1)
+        it.printf(bx[1]+10, by[1]+8,  id(font_small),  "Estado");
+        it.printf(bx[1]+135, by[1]+50, id(font_small), TextAlign::CENTER, "%s", id(myWeather).state.c_str());
+
+      // ══════════════════════════════════════════════════════
+      //  PANTALLA 1 — CALENDARIO (800×480 completo)
+      // ══════════════════════════════════════════════════════
+      } else {
+
+        // Título
+        it.printf(400, 25, id(font_large), TextAlign::CENTER, "Calendario");
+        it.filled_rectangle(30, 70, 740, 3);
+
+        // --- Estructura de evento ---
+        struct Event {
+          std::string message;
+          std::string start_time;
+          std::string end_time;
+          time_t start_timestamp;
+        };
+
+        std::vector<Event> events = {
+          {id(ha_calendar_event_1).state, id(ha_calendar_start_time_1).state, id(ha_calendar_end_time_1).state, parse_time_fn(id(ha_calendar_start_time_1).state)},
+          {id(ha_calendar_event_2).state, id(ha_calendar_start_time_2).state, id(ha_calendar_end_time_2).state, parse_time_fn(id(ha_calendar_start_time_2).state)},
+          {id(ha_calendar_event_3).state, id(ha_calendar_start_time_3).state, id(ha_calendar_end_time_3).state, parse_time_fn(id(ha_calendar_start_time_3).state)},
+        };
+
+        // Filtrar inválidos y ordenar
+        events.erase(std::remove_if(events.begin(), events.end(),
+          [](const Event &e){ return e.start_timestamp == 0; }), events.end());
+        std::sort(events.begin(), events.end(),
+          [](const Event &a, const Event &b){ return a.start_timestamp < b.start_timestamp; });
+
+        // Dibujar cada evento como tarjeta
+        int card_x = 30;
+        int card_y = 90;
+        int card_w = 740;
+        int card_h = 110;
+        int card_gap = 15;
+        int cr = 10, ct = 3;
+
+        for (const auto &event : events) {
+          if (card_y + card_h > 470) break;
+
+          std::string fecha  = format_date_fn(event.start_time);
+          std::string inicio = format_time_fn(event.start_time);
+          std::string fin    = format_time_fn(event.end_time);
+
+          // Borde redondeado de la tarjeta
+          it.filled_rectangle(card_x + cr, card_y, card_w - 2*cr, ct);
+          it.filled_rectangle(card_x + cr, card_y + card_h - ct, card_w - 2*cr, ct);
+          it.filled_rectangle(card_x, card_y + cr, ct, card_h - 2*cr);
+          it.filled_rectangle(card_x + card_w - ct, card_y + cr, ct, card_h - 2*cr);
+          it.filled_circle(card_x + cr, card_y + cr, cr);
+          it.filled_circle(card_x + card_w - cr, card_y + cr, cr);
+          it.filled_circle(card_x + cr, card_y + card_h - cr, cr);
+          it.filled_circle(card_x + card_w - cr, card_y + card_h - cr, cr);
+          it.filled_rectangle(card_x + ct, card_y + ct, card_w - 2*ct, card_h - 2*ct, COLOR_OFF);
+
+          // Barra vertical izquierda (acento)
+          it.filled_rectangle(card_x + ct + 2, card_y + ct + 2, 8, card_h - 2*ct - 4);
+
+          // Fecha y horario
+          if (inicio != "Invalid" && fin != "Invalid") {
+            it.printf(card_x + 30, card_y + 18, id(font_small), "%s   %s - %s", fecha.c_str(), inicio.c_str(), fin.c_str());
+          } else {
+            it.printf(card_x + 30, card_y + 18, id(font_small), "%s", fecha.c_str());
+          }
+
+          // Nombre del evento (más grande)
+          it.printf(card_x + 30, card_y + 55, id(font_medium), "%s", event.message.c_str());
+
+          card_y += card_h + card_gap;
+        }
+
+        // Si no hay eventos
+        if (events.empty()) {
+          it.printf(400, 260, id(font_medium), TextAlign::CENTER, "Sin eventos proximos");
+        }
+      }
