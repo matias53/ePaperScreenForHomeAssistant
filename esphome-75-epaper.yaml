@@ -68,7 +68,7 @@ select:
     on_value:
       then:
         - lambda: |-
-            std::string sel = id(screen_selector).state;
+            std::string sel = id(screen_selector).current_option();
             int target = -1;
             if      (sel == "clima")      target = 0;
             else if (sel == "calendario") target = 1;
@@ -80,6 +80,20 @@ select:
               if (id(first_update_done)) id(update_display).execute();
             }
             // "auto" no fuerza cambio inmediato, deja que el intervalo maneje
+
+number:
+  - platform: template
+    name: "Intervalo de alternancia"
+    id: switch_interval
+    icon: mdi:timer-outline
+    optimistic: true
+    restore_value: true
+    initial_value: 30
+    min_value: 5
+    max_value: 300
+    step: 5
+    unit_of_measurement: "s"
+    mode: box
 
 script:
   - id: update_display
@@ -100,7 +114,7 @@ interval:
             return;
           }
 
-          std::string sel = id(screen_selector).state;
+          std::string sel = id(screen_selector).current_option();
 
           // ── Modo fijo ──────────────────────────────────────────────
           // El cambio de pantalla ya se hace en on_value del select.
@@ -128,11 +142,7 @@ interval:
             return;
           }
 
-          int interval_val = 30;
-          if (!id(switch_interval).state.empty()) {
-            interval_val = (int)atof(id(switch_interval).state.c_str());
-            if (interval_val < 5) interval_val = 5;
-          }
+          int interval_val = (int)id(switch_interval).state;
 
           if (id(screen_timer) >= interval_val) {
             id(screen_timer) = 0;
@@ -152,10 +162,6 @@ time:
     id: homeassistant_time
 
 text_sensor:
-  - platform: homeassistant
-    id: switch_interval
-    entity_id: input_number.epaper_switch_interval
-
   # ── Calendarios ───────────────────────────────────────────────────
   - platform: homeassistant
     id: ha_calendar_event_1
