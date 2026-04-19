@@ -61,7 +61,6 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
-          // Primer update: esperar wifi + datos
           if (!id(first_update_done)) {
             if (id(wifi_status) == 1 && !id(ha_calendar_event_1).state.empty()) {
               id(first_update_done) = true;
@@ -71,17 +70,14 @@ interval:
             return;
           }
 
-          // Incrementar timer
           id(screen_timer) += 1;
 
-          // Leer intervalo desde HA (default 30s si aún no llegó)
           int interval_val = 30;
           if (!id(switch_interval).state.empty()) {
             interval_val = (int)atof(id(switch_interval).state.c_str());
             if (interval_val < 5) interval_val = 5;
           }
 
-          // Alternar pantalla al llegar al intervalo
           if (id(screen_timer) >= interval_val) {
             id(screen_timer) = 0;
             id(current_screen) = (id(current_screen) == 0) ? 1 : 0;
@@ -100,12 +96,10 @@ time:
     id: homeassistant_time
 
 text_sensor:
-  # Intervalo de alternado (en segundos) desde HA
   - platform: homeassistant
     id: switch_interval
     entity_id: input_number.epaper_switch_interval
 
-  # Calendario 1
   - platform: homeassistant
     id: ha_calendar_event_1
     entity_id: calendar.calefon_bano_social
@@ -119,7 +113,6 @@ text_sensor:
     entity_id: calendar.calefon_bano_social
     attribute: "end_time"
 
-  # Calendario 2
   - platform: homeassistant
     id: ha_calendar_event_2
     entity_id: calendar.calefon_cocina
@@ -133,7 +126,6 @@ text_sensor:
     entity_id: calendar.calefon_cocina
     attribute: "end_time"
 
-  # Calendario 3
   - platform: homeassistant
     id: ha_calendar_event_3
     entity_id: calendar.calefon_bano_suite
@@ -147,7 +139,6 @@ text_sensor:
     entity_id: calendar.calefon_bano_suite
     attribute: "end_time"
 
-  # Clima
   - platform: homeassistant
     entity_id: weather.forecast_home
     id: myWeather
@@ -177,14 +168,14 @@ font:
     size: 28
   - file: "fonts/Montserrat-Black.ttf"
     id: font_large
-    size: 40
+    size: 38
   - file: "fonts/Montserrat-Black.ttf"
     id: font_xlarge
-    size: 56
+    size: 65
 
   - file: 'fonts/materialdesignicons-webfont.ttf'
-    id: font_mdi_large
-    size: 200
+    id: font_weather_big
+    size: 230
     glyphs: &mdi-weather-glyphs
       - "\U000F050F" # Thermometer
       - "\U000F058E" # Humidity
@@ -195,12 +186,8 @@ font:
       - "\U000F0598" # Snowy
       - "\U000F0599" # Sunny
   - file: 'fonts/materialdesignicons-webfont.ttf'
-    id: font_weather_big
-    size: 260
-    glyphs: *mdi-weather-glyphs
-  - file: 'fonts/materialdesignicons-webfont.ttf'
     id: font_icon_med
-    size: 60
+    size: 50
     glyphs: *mdi-weather-glyphs
 
 spi:
@@ -242,7 +229,7 @@ display:
       auto format_time_fn = [](const std::string &time_str) -> std::string {
         struct tm timeinfo = {};
         if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr)
-          return "Invalid";
+          return "?";
         char buffer[10];
         strftime(buffer, sizeof(buffer), "%H:%M", &timeinfo);
         return std::string(buffer);
@@ -251,98 +238,125 @@ display:
       auto format_date_fn = [](const std::string &time_str) -> std::string {
         struct tm timeinfo = {};
         if (strptime(time_str.c_str(), "%Y-%m-%d %H:%M:%S", &timeinfo) == nullptr)
-          return "Invalid";
+          return "?";
         char buffer[6];
         strftime(buffer, sizeof(buffer), "%d/%m", &timeinfo);
         return std::string(buffer);
       };
 
       // ══════════════════════════════════════════════════════
-      //  PANTALLA 0 — CLIMA (800×480 completo)
+      //  PANTALLA 0 — CLIMA
+      //  Izquierda  x=0..305   → ícono clima
+      //  Derecha    x=315..800 → fecha/hora, temp, 4 tarjetas
       // ══════════════════════════════════════════════════════
       if (id(current_screen) == 0) {
 
-        // --- Ícono de clima (izquierda, grande) ---
+        // --- Ícono clima (columna izquierda, centrado en x=155) ---
+        // font_weather_big size=230: el glifo mide ~220px de ancho
+        // TextAlign::CENTER usa x como centro horizontal
         std::string ws = id(myWeather).state.c_str();
+        const char* weather_icon;
         if (ws == "rainy" || ws == "lightning" || ws == "pouring") {
-          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0596");
+          weather_icon = "\U000F0596";
         } else if (ws == "snowy") {
-          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0598");
+          weather_icon = "\U000F0598";
         } else if (ws == "sunny" || ws == "windy") {
-          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0599");
+          weather_icon = "\U000F0599";
         } else {
-          it.printf(160, 130, id(font_weather_big), TextAlign::CENTER, "\U000F0590");
+          weather_icon = "\U000F0590";
         }
+        it.printf(155, 230, id(font_weather_big), TextAlign::CENTER, "%s", weather_icon);
 
-        // --- Fecha y día (centro-arriba) ---
+        // Descripción estado debajo del ícono
+        it.printf(155, 400, id(font_small), TextAlign::CENTER, "%s", id(myWeather).state.c_str());
+
+        // --- Línea divisoria vertical ---
+        it.filled_rectangle(308, 15, 4, 450);
+
+        // ── Columna derecha: x_inicio=320, ancho disponible=480 ──
+
         auto time_now = id(homeassistant_time).now();
+
+        const char* days_es[] = {
+          "Sabado","Domingo","Lunes","Martes",
+          "Miercoles","Jueves","Viernes"
+        };
         const char* months_es[] = {
           "Enero","Febrero","Marzo","Abril","Mayo","Junio",
           "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
         };
-        const char* days_es[] = {
-          "Sabado","Domingo","Lunes","Martes","Miercoles","Jueves","Viernes"
+
+        // Día de semana (pequeño)
+        it.printf(325, 20, id(font_small), "%s", days_es[time_now.day_of_week]);
+
+        // Fecha (izquierda) + Hora (derecha) en la misma línea y=65
+        char hora_buf[6];
+        snprintf(hora_buf, sizeof(hora_buf), "%02d:%02d", time_now.hour, time_now.minute);
+        it.printf(325, 65, id(font_large), "%s %d", months_es[time_now.month - 1], time_now.day_of_month);
+        it.printf(775, 65, id(font_large), TextAlign::RIGHT, "%s", hora_buf);
+
+        // Línea separadora
+        it.filled_rectangle(320, 103, 470, 3);
+
+        // Temperatura grande centrada en columna derecha (centro = 320 + 240 = 560)
+        it.printf(555, 175, id(font_xlarge), TextAlign::CENTER, "%s°C", id(temp).state.c_str());
+
+        // Línea separadora
+        it.filled_rectangle(320, 218, 470, 3);
+
+        // ── 4 tarjetas (2 columnas × 2 filas) ──
+        // col0: x=325   col1: x=550   ancho=215   alto=105
+        // fil0: y=228   fil1: y=348
+        // borde derecho: 550 + 215 = 765 ✓ (< 800)
+        // borde inferior: 348 + 105 = 453 ✓ (< 480)
+
+        const int cx[2] = {325, 550};
+        const int cy[2] = {228, 348};
+        const int cw = 215, ch = 105, cr = 8, ct = 3;
+
+        auto draw_card = [&](int x, int y, int w, int h, int r, int t) {
+          it.filled_rectangle(x + r, y, w - 2*r, t);
+          it.filled_rectangle(x + r, y + h - t, w - 2*r, t);
+          it.filled_rectangle(x, y + r, t, h - 2*r);
+          it.filled_rectangle(x + w - t, y + r, t, h - 2*r);
+          it.filled_circle(x + r, y + r, r);
+          it.filled_circle(x + w - r, y + r, r);
+          it.filled_circle(x + r, y + h - r, r);
+          it.filled_circle(x + w - r, y + h - r, r);
+          it.filled_rectangle(x + t, y + t, w - 2*t, h - 2*t, COLOR_OFF);
+          // barra acento izquierda
+          it.filled_rectangle(x + t + 1, y + t + 1, 6, h - 2*t - 2);
         };
-        it.printf(490, 30, id(font_medium), TextAlign::CENTER, "%s", days_es[time_now.day_of_week]);
-        it.printf(490, 75, id(font_large),  TextAlign::CENTER, "%s %d", months_es[time_now.month - 1], time_now.day_of_month);
 
-        // Línea separadora horizontal
-        it.filled_rectangle(320, 120, 460, 3);
+        // Humedad  (col0, fil0)
+        draw_card(cx[0], cy[0], cw, ch, cr, ct);
+        it.printf(cx[0]+20, cy[0]+12, id(font_small),  "Humedad");
+        it.printf(cx[0]+20, cy[0]+55, id(font_medium), "%s%%", id(humi).state.c_str());
 
-        // --- Temperatura grande (centro) ---
-        it.printf(490, 160, id(font_xlarge), TextAlign::CENTER, "%s°C", id(temp).state.c_str());
+        // Viento   (col1, fil0)
+        draw_card(cx[1], cy[0], cw, ch, cr, ct);
+        it.printf(cx[1]+20, cy[0]+12, id(font_small),  "Viento");
+        it.printf(cx[1]+20, cy[0]+55, id(font_medium), "%s km/h", id(wind).state.c_str());
 
-        // --- 4 datos clima en 2 columnas (abajo) ---
-        // Temperatura / Humedad / Presión / Viento
-        int bx[2] = {325, 615};
-        int by[2] = {270, 380};
-        int bw = 270, bh = 90, r2 = 8, th2 = 3;
+        // Presion  (col0, fil1)
+        draw_card(cx[0], cy[1], cw, ch, cr, ct);
+        it.printf(cx[0]+20, cy[1]+12, id(font_small),  "Presion");
+        it.printf(cx[0]+20, cy[1]+50, id(font_medium), "%s", id(press).state.c_str());
+        it.printf(cx[0]+20, cy[1]+80, id(font_small),  "hPa");
 
-        for (int col = 0; col < 2; col++) {
-          for (int row = 0; row < 2; row++) {
-            int x = bx[col], y = by[row], w = bw, h = bh;
-            it.filled_rectangle(x + r2, y, w - 2*r2, th2);
-            it.filled_rectangle(x + r2, y + h - th2, w - 2*r2, th2);
-            it.filled_rectangle(x, y + r2, th2, h - 2*r2);
-            it.filled_rectangle(x + w - th2, y + r2, th2, h - 2*r2);
-            it.filled_circle(x + r2, y + r2, r2);
-            it.filled_circle(x + w - r2, y + r2, r2);
-            it.filled_circle(x + r2, y + h - r2, r2);
-            it.filled_circle(x + w - r2, y + h - r2, r2);
-            it.filled_rectangle(x + th2, y + th2, w - 2*th2, h - 2*th2, COLOR_OFF);
-          }
-        }
-
-        // Humedad (col0 row0)
-        it.printf(bx[0]+10, by[0]+8,  id(font_small),  "Humedad");
-        it.printf(bx[0]+36, by[0]+45, id(font_icon_med), TextAlign::CENTER, "\U000F058E");
-        it.printf(bx[0]+80, by[0]+45, id(font_medium), "%s%%", id(humi).state.c_str());
-
-        // Viento (col0 row1)
-        it.printf(bx[0]+10, by[1]+8,  id(font_small),  "Viento");
-        it.printf(bx[0]+36, by[1]+45, id(font_icon_med), TextAlign::CENTER, "\U000F059D");
-        it.printf(bx[0]+80, by[1]+45, id(font_medium), "%s km/h", id(wind).state.c_str());
-
-        // Presión (col1 row0)
-        it.printf(bx[1]+10, by[0]+8,  id(font_small),  "Presion");
-        it.printf(bx[1]+36, by[0]+45, id(font_icon_med), TextAlign::CENTER, "\U000F0D60");
-        it.printf(bx[1]+80, by[0]+38, id(font_medium), "%s", id(press).state.c_str());
-        it.printf(bx[1]+80, by[0]+64, id(font_small),  "hPa");
-
-        // Descripción clima (col1 row1)
-        it.printf(bx[1]+10, by[1]+8,  id(font_small),  "Estado");
-        it.printf(bx[1]+135, by[1]+50, id(font_small), TextAlign::CENTER, "%s", id(myWeather).state.c_str());
+        // Estado   (col1, fil1)
+        draw_card(cx[1], cy[1], cw, ch, cr, ct);
+        it.printf(cx[1]+20, cy[1]+12, id(font_small),  "Estado");
+        it.printf(cx[1]+20, cy[1]+55, id(font_medium), "%s", id(myWeather).state.c_str());
 
       // ══════════════════════════════════════════════════════
-      //  PANTALLA 1 — CALENDARIO (800×480 completo)
+      //  PANTALLA 1 — CALENDARIO
       // ══════════════════════════════════════════════════════
       } else {
 
-        // Título
         it.printf(400, 25, id(font_large), TextAlign::CENTER, "Calendario");
-        it.filled_rectangle(30, 70, 740, 3);
+        it.filled_rectangle(30, 68, 740, 3);
 
-        // --- Estructura de evento ---
         struct Event {
           std::string message;
           std::string start_time;
@@ -356,55 +370,45 @@ display:
           {id(ha_calendar_event_3).state, id(ha_calendar_start_time_3).state, id(ha_calendar_end_time_3).state, parse_time_fn(id(ha_calendar_start_time_3).state)},
         };
 
-        // Filtrar inválidos y ordenar
         events.erase(std::remove_if(events.begin(), events.end(),
           [](const Event &e){ return e.start_timestamp == 0; }), events.end());
         std::sort(events.begin(), events.end(),
           [](const Event &a, const Event &b){ return a.start_timestamp < b.start_timestamp; });
 
-        // Dibujar cada evento como tarjeta
         int card_x = 30;
-        int card_y = 90;
-        int card_w = 740;
-        int card_h = 110;
-        int card_gap = 15;
-        int cr = 10, ct = 3;
+        int card_y = 82;
+        const int card_w = 740, card_h = 115, card_gap = 12;
+        const int cr2 = 10, ct2 = 3;
 
         for (const auto &event : events) {
-          if (card_y + card_h > 470) break;
+          if (card_y + card_h > 472) break;
 
           std::string fecha  = format_date_fn(event.start_time);
           std::string inicio = format_time_fn(event.start_time);
           std::string fin    = format_time_fn(event.end_time);
 
-          // Borde redondeado de la tarjeta
-          it.filled_rectangle(card_x + cr, card_y, card_w - 2*cr, ct);
-          it.filled_rectangle(card_x + cr, card_y + card_h - ct, card_w - 2*cr, ct);
-          it.filled_rectangle(card_x, card_y + cr, ct, card_h - 2*cr);
-          it.filled_rectangle(card_x + card_w - ct, card_y + cr, ct, card_h - 2*cr);
-          it.filled_circle(card_x + cr, card_y + cr, cr);
-          it.filled_circle(card_x + card_w - cr, card_y + cr, cr);
-          it.filled_circle(card_x + cr, card_y + card_h - cr, cr);
-          it.filled_circle(card_x + card_w - cr, card_y + card_h - cr, cr);
-          it.filled_rectangle(card_x + ct, card_y + ct, card_w - 2*ct, card_h - 2*ct, COLOR_OFF);
+          it.filled_rectangle(card_x + cr2, card_y, card_w - 2*cr2, ct2);
+          it.filled_rectangle(card_x + cr2, card_y + card_h - ct2, card_w - 2*cr2, ct2);
+          it.filled_rectangle(card_x, card_y + cr2, ct2, card_h - 2*cr2);
+          it.filled_rectangle(card_x + card_w - ct2, card_y + cr2, ct2, card_h - 2*cr2);
+          it.filled_circle(card_x + cr2, card_y + cr2, cr2);
+          it.filled_circle(card_x + card_w - cr2, card_y + cr2, cr2);
+          it.filled_circle(card_x + cr2, card_y + card_h - cr2, cr2);
+          it.filled_circle(card_x + card_w - cr2, card_y + card_h - cr2, cr2);
+          it.filled_rectangle(card_x + ct2, card_y + ct2, card_w - 2*ct2, card_h - 2*ct2, COLOR_OFF);
+          it.filled_rectangle(card_x + ct2 + 1, card_y + ct2 + 1, 8, card_h - 2*ct2 - 2);
 
-          // Barra vertical izquierda (acento)
-          it.filled_rectangle(card_x + ct + 2, card_y + ct + 2, 8, card_h - 2*ct - 4);
-
-          // Fecha y horario
-          if (inicio != "Invalid" && fin != "Invalid") {
-            it.printf(card_x + 30, card_y + 18, id(font_small), "%s   %s - %s", fecha.c_str(), inicio.c_str(), fin.c_str());
+          if (inicio != "?" && fin != "?") {
+            it.printf(card_x + 28, card_y + 16, id(font_small), "%s   %s - %s", fecha.c_str(), inicio.c_str(), fin.c_str());
           } else {
-            it.printf(card_x + 30, card_y + 18, id(font_small), "%s", fecha.c_str());
+            it.printf(card_x + 28, card_y + 16, id(font_small), "%s", fecha.c_str());
           }
 
-          // Nombre del evento (más grande)
-          it.printf(card_x + 30, card_y + 55, id(font_medium), "%s", event.message.c_str());
+          it.printf(card_x + 28, card_y + 58, id(font_medium), "%s", event.message.c_str());
 
           card_y += card_h + card_gap;
         }
 
-        // Si no hay eventos
         if (events.empty()) {
           it.printf(400, 260, id(font_medium), TextAlign::CENTER, "Sin eventos proximos");
         }
