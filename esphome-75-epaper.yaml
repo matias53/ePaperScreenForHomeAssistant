@@ -46,11 +46,40 @@ globals:
   - id: current_screen
     type: int
     restore_value: no
-    initial_value: "0"   # 0 = clima, 1 = calendario
+    initial_value: "0"   # 0 = clima, 1 = calendario, 2 = reloj
   - id: screen_timer
     type: int
     restore_value: no
     initial_value: "0"
+
+select:
+  - platform: template
+    name: "Pantalla"
+    id: screen_selector
+    icon: mdi:monitor
+    optimistic: true
+    restore_value: true
+    initial_option: "auto"
+    options:
+      - "auto"
+      - "clima"
+      - "calendario"
+      - "reloj"
+    on_value:
+      then:
+        - lambda: |-
+            std::string sel = id(screen_selector).state;
+            int target = -1;
+            if      (sel == "clima")      target = 0;
+            else if (sel == "calendario") target = 1;
+            else if (sel == "reloj")      target = 2;
+
+            if (target >= 0) {
+              id(current_screen) = target;
+              id(screen_timer) = 0;
+              if (id(first_update_done)) id(update_display).execute();
+            }
+            // "auto" no fuerza cambio inmediato, deja que el intervalo maneje
 
 script:
   - id: update_display
@@ -61,6 +90,7 @@ interval:
   - interval: 1s
     then:
       - lambda: |-
+          // ── Esperar primera actualización ──────────────────────────
           if (!id(first_update_done)) {
             if (id(wifi_status) == 1 && !id(ha_calendar_event_1).state.empty()) {
               id(first_update_done) = true;
@@ -70,7 +100,33 @@ interval:
             return;
           }
 
+          std::string sel = id(screen_selector).state;
+
+          // ── Modo fijo ──────────────────────────────────────────────
+          // El cambio de pantalla ya se hace en on_value del select.
+          // Aquí solo manejamos el refresco periódico del reloj.
+          if (sel == "reloj") {
+            id(screen_timer) += 1;
+            if (id(screen_timer) >= 60) {
+              id(screen_timer) = 0;
+              id(update_display).execute();
+            }
+            return;
+          }
+
+          if (sel == "clima" || sel == "calendario") {
+            return;  // pantalla fija, sin refresco periódico necesario
+          }
+
+          // ── Modo "auto": alternancia normal ───────────────────────
           id(screen_timer) += 1;
+
+          // Reloj activo en modo auto: también refresca cada 60s
+          if (id(current_screen) == 2 && id(screen_timer) >= 60) {
+            id(screen_timer) = 0;
+            id(update_display).execute();
+            return;
+          }
 
           int interval_val = 30;
           if (!id(switch_interval).state.empty()) {
@@ -80,7 +136,7 @@ interval:
 
           if (id(screen_timer) >= interval_val) {
             id(screen_timer) = 0;
-            id(current_screen) = (id(current_screen) == 0) ? 1 : 0;
+            id(current_screen) = (id(current_screen) + 1) % 3;
             id(update_display).execute();
           }
 
@@ -100,6 +156,7 @@ text_sensor:
     id: switch_interval
     entity_id: input_number.epaper_switch_interval
 
+  # ── Calendarios ───────────────────────────────────────────────────
   - platform: homeassistant
     id: ha_calendar_event_1
     entity_id: calendar.calefon_bano_social
@@ -139,6 +196,7 @@ text_sensor:
     entity_id: calendar.calefon_bano_suite
     attribute: "end_time"
 
+  # ── Clima ──────────────────────────────────────────────────────────
   - platform: homeassistant
     entity_id: weather.forecast_home
     id: myWeather
@@ -172,6 +230,12 @@ font:
   - file: "fonts/Montserrat-Black.ttf"
     id: font_xlarge
     size: 65
+  - file: "fonts/Montserrat-Black.ttf"
+    id: font_clock
+    size: 160
+  - file: "fonts/Montserrat-Black.ttf"
+    id: font_date_big
+    size: 55
 
   - file: 'fonts/materialdesignicons-webfont.ttf'
     id: font_weather_big
@@ -246,14 +310,9 @@ display:
 
       // ══════════════════════════════════════════════════════
       //  PANTALLA 0 — CLIMA
-      //  Izquierda  x=0..305   → ícono clima
-      //  Derecha    x=315..800 → fecha/hora, temp, 4 tarjetas
       // ══════════════════════════════════════════════════════
       if (id(current_screen) == 0) {
 
-        // --- Ícono clima (columna izquierda, centrado en x=155) ---
-        // font_weather_big size=230: el glifo mide ~220px de ancho
-        // TextAlign::CENTER usa x como centro horizontal
         std::string ws = id(myWeather).state.c_str();
         const char* weather_icon;
         if (ws == "rainy" || ws == "lightning" || ws == "pouring") {
@@ -266,14 +325,9 @@ display:
           weather_icon = "\U000F0590";
         }
         it.printf(155, 230, id(font_weather_big), TextAlign::CENTER, "%s", weather_icon);
-
-        // Descripción estado debajo del ícono
         it.printf(155, 400, id(font_small), TextAlign::CENTER, "%s", id(myWeather).state.c_str());
 
-        // --- Línea divisoria vertical ---
         it.filled_rectangle(308, 15, 4, 450);
-
-        // ── Columna derecha: x_inicio=320, ancho disponible=480 ──
 
         auto time_now = id(homeassistant_time).now();
 
@@ -286,29 +340,18 @@ display:
           "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
         };
 
-        // Día de semana (pequeño)
         it.printf(325, 20, id(font_small), "%s", days_es[time_now.day_of_week]);
 
-        // Fecha (izquierda) + Hora (derecha) en la misma línea y=65
         char hora_buf[6];
         snprintf(hora_buf, sizeof(hora_buf), "%02d:%02d", time_now.hour, time_now.minute);
         it.printf(325, 65, id(font_large), "%s %d", months_es[time_now.month - 1], time_now.day_of_month);
         it.printf(775, 65, id(font_large), TextAlign::RIGHT, "%s", hora_buf);
 
-        // Línea separadora
         it.filled_rectangle(320, 103, 470, 3);
 
-        // Temperatura grande centrada en columna derecha (centro = 320 + 240 = 560)
         it.printf(555, 175, id(font_xlarge), TextAlign::CENTER, "%s°C", id(temp).state.c_str());
 
-        // Línea separadora
         it.filled_rectangle(320, 218, 470, 3);
-
-        // ── 4 tarjetas (2 columnas × 2 filas) ──
-        // col0: x=325   col1: x=550   ancho=215   alto=105
-        // fil0: y=228   fil1: y=348
-        // borde derecho: 550 + 215 = 765 ✓ (< 800)
-        // borde inferior: 348 + 105 = 453 ✓ (< 480)
 
         const int cx[2] = {325, 550};
         const int cy[2] = {228, 348};
@@ -324,27 +367,22 @@ display:
           it.filled_circle(x + r, y + h - r, r);
           it.filled_circle(x + w - r, y + h - r, r);
           it.filled_rectangle(x + t, y + t, w - 2*t, h - 2*t, COLOR_OFF);
-          // barra acento izquierda
           it.filled_rectangle(x + t + 1, y + t + 1, 6, h - 2*t - 2);
         };
 
-        // Humedad  (col0, fil0)
         draw_card(cx[0], cy[0], cw, ch, cr, ct);
         it.printf(cx[0]+20, cy[0]+12, id(font_small),  "Humedad");
         it.printf(cx[0]+20, cy[0]+55, id(font_medium), "%s%%", id(humi).state.c_str());
 
-        // Viento   (col1, fil0)
         draw_card(cx[1], cy[0], cw, ch, cr, ct);
         it.printf(cx[1]+20, cy[0]+12, id(font_small),  "Viento");
         it.printf(cx[1]+20, cy[0]+55, id(font_medium), "%s km/h", id(wind).state.c_str());
 
-        // Presion  (col0, fil1)
         draw_card(cx[0], cy[1], cw, ch, cr, ct);
         it.printf(cx[0]+20, cy[1]+12, id(font_small),  "Presion");
         it.printf(cx[0]+20, cy[1]+50, id(font_medium), "%s", id(press).state.c_str());
         it.printf(cx[0]+20, cy[1]+80, id(font_small),  "hPa");
 
-        // Estado   (col1, fil1)
         draw_card(cx[1], cy[1], cw, ch, cr, ct);
         it.printf(cx[1]+20, cy[1]+12, id(font_small),  "Estado");
         it.printf(cx[1]+20, cy[1]+55, id(font_medium), "%s", id(myWeather).state.c_str());
@@ -352,7 +390,7 @@ display:
       // ══════════════════════════════════════════════════════
       //  PANTALLA 1 — CALENDARIO
       // ══════════════════════════════════════════════════════
-      } else {
+      } else if (id(current_screen) == 1) {
 
         it.printf(400, 25, id(font_large), TextAlign::CENTER, "Calendario");
         it.filled_rectangle(30, 68, 740, 3);
@@ -412,4 +450,41 @@ display:
         if (events.empty()) {
           it.printf(400, 260, id(font_medium), TextAlign::CENTER, "Sin eventos proximos");
         }
+
+      // ══════════════════════════════════════════════════════
+      //  PANTALLA 2 — RELOJ
+      //  Display: 800 × 480 px
+      //  Hora grande centrada en y≈200, fecha mediana en y≈360
+      // ══════════════════════════════════════════════════════
+      } else if (id(current_screen) == 2) {
+
+        auto time_now = id(homeassistant_time).now();
+
+        const char* days_es[] = {
+          "Sabado","Domingo","Lunes","Martes",
+          "Miercoles","Jueves","Viernes"
+        };
+        const char* months_es[] = {
+          "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+        };
+
+        // Hora digital grande  (centrada en x=400, y=200)
+        // font_clock size=160: dos dígitos + dos puntos + dos dígitos ≈ 560px de ancho
+        char hora_buf[6];
+        snprintf(hora_buf, sizeof(hora_buf), "%02d:%02d", time_now.hour, time_now.minute);
+        it.printf(400, 200, id(font_clock), TextAlign::CENTER, "%s", hora_buf);
+
+        // Línea decorativa debajo de la hora
+        it.filled_rectangle(80, 300, 640, 4);
+
+        // Día de semana + fecha (centrados en x=400, y=370)
+        // Ejemplo: "Lunes  14 Abril"
+        char fecha_buf[40];
+        snprintf(fecha_buf, sizeof(fecha_buf), "%s  %d %s",
+          days_es[time_now.day_of_week],
+          time_now.day_of_month,
+          months_es[time_now.month - 1]);
+        it.printf(400, 365, id(font_date_big), TextAlign::CENTER, "%s", fecha_buf);
+
       }
