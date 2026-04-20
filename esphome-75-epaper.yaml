@@ -51,6 +51,10 @@ globals:
     type: int
     restore_value: no
     initial_value: "0"
+  - id: display_busy
+    type: bool
+    restore_value: no
+    initial_value: "false"
 
 select:
   - platform: template
@@ -65,6 +69,7 @@ select:
       - "clima"
       - "calendario"
       - "reloj"
+      - "solar"
     on_value:
       then:
         - lambda: |-
@@ -73,11 +78,12 @@ select:
             if      (sel == "clima")      target = 0;
             else if (sel == "calendario") target = 1;
             else if (sel == "reloj")      target = 2;
+            else if (sel == "solar")      target = 3;
 
             if (target >= 0) {
               id(current_screen) = target;
               id(screen_timer) = 0;
-              if (id(first_update_done)) id(update_display).execute();
+              if (id(first_update_done) && !id(display_busy)) id(update_display).execute();
             }
             // "auto" no fuerza cambio inmediato, deja que el intervalo maneje
 
@@ -97,8 +103,14 @@ number:
 
 script:
   - id: update_display
+    mode: single          # si ya está corriendo, no encolar otro
     then:
+      - lambda: |-
+          if (id(display_busy)) return;  // display ocupado, ignorar
+          id(display_busy) = true;
       - component.update: my_display
+      - lambda: |-
+          id(display_busy) = false;
 
 interval:
   - interval: 1s
@@ -122,8 +134,11 @@ interval:
           if (sel == "reloj") {
             id(screen_timer) += 1;
             if (id(screen_timer) >= 60) {
-              id(screen_timer) = 0;
-              id(update_display).execute();
+              if (!id(display_busy)) {
+                id(screen_timer) = 0;
+                id(update_display).execute();
+              }
+              // si busy, mantener timer alto para reintentar al próximo tick
             }
             return;
           }
@@ -137,17 +152,22 @@ interval:
 
           // Reloj activo en modo auto: también refresca cada 60s
           if (id(current_screen) == 2 && id(screen_timer) >= 60) {
-            id(screen_timer) = 0;
-            id(update_display).execute();
+            if (!id(display_busy)) {
+              id(screen_timer) = 0;
+              id(update_display).execute();
+            }
             return;
           }
 
           int interval_val = (int)id(switch_interval).state;
 
           if (id(screen_timer) >= interval_val) {
-            id(screen_timer) = 0;
-            id(current_screen) = (id(current_screen) + 1) % 3;
-            id(update_display).execute();
+            if (!id(display_busy)) {
+              id(screen_timer) = 0;
+              id(current_screen) = (id(current_screen) + 1) % 4;
+              id(update_display).execute();
+            }
+            // si busy, mantener timer alto para reintentar al próximo tick
           }
 
 image:
@@ -202,6 +222,23 @@ text_sensor:
     entity_id: calendar.calefon_bano_suite
     attribute: "end_time"
 
+  # ── Solar ─────────────────────────────────────────────────────────
+  - platform: homeassistant
+    id: solar_estimado_hoy
+    entity_id: sensor.energy_production_today
+  - platform: homeassistant
+    id: solar_generado_hoy
+    entity_id: sensor.daily_generated_energy
+  - platform: homeassistant
+    id: solar_consumido_hoy
+    entity_id: sensor.daily_used_energy
+  - platform: homeassistant
+    id: solar_potencia_inv
+    entity_id: sensor.proeminverter_inversor_power
+  - platform: homeassistant
+    id: solar_potencia_cons
+    entity_id: sensor.shellyproem_em0_power
+
   # ── Clima ──────────────────────────────────────────────────────────
   - platform: homeassistant
     entity_id: weather.forecast_home
@@ -227,21 +264,30 @@ font:
   - file: "fonts/Montserrat-Black.ttf"
     id: font_small
     size: 20
+    glyphs: &spanish-glyphs
+      - "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+      - " "
+      - "áéíóúÁÉÍÓÚñÑüÜ¿¡°"
   - file: "fonts/Montserrat-Black.ttf"
     id: font_medium
     size: 28
+    glyphs: *spanish-glyphs
   - file: "fonts/Montserrat-Black.ttf"
     id: font_large
     size: 38
+    glyphs: *spanish-glyphs
   - file: "fonts/Montserrat-Black.ttf"
     id: font_xlarge
     size: 65
+    glyphs: *spanish-glyphs
   - file: "fonts/Montserrat-Black.ttf"
     id: font_clock
     size: 160
+    glyphs: *spanish-glyphs
   - file: "fonts/Montserrat-Black.ttf"
     id: font_date_big
     size: 55
+    glyphs: *spanish-glyphs
 
   - file: 'fonts/materialdesignicons-webfont.ttf'
     id: font_weather_big
@@ -458,39 +504,76 @@ display:
         }
 
       // ══════════════════════════════════════════════════════
-      //  PANTALLA 2 — RELOJ
+      //  PANTALLA 3 — SOLAR
       //  Display: 800 × 480 px
-      //  Hora grande centrada en y≈200, fecha mediana en y≈360
+      //  Superior (y=0..235):  2 tarjetas anchas — potencia W
+      //  Inferior (y=245..480): 3 tarjetas — energía del día
       // ══════════════════════════════════════════════════════
-      } else if (id(current_screen) == 2) {
+      } else if (id(current_screen) == 3) {
 
-        auto time_now = id(homeassistant_time).now();
+        // ── Título ──────────────────────────────────────────
+        it.printf(400, 18, id(font_large), TextAlign::CENTER, "Solar");
+        it.filled_rectangle(30, 62, 740, 3);
 
-        const char* days_es[] = {
-          "Sabado","Domingo","Lunes","Martes",
-          "Miercoles","Jueves","Viernes"
+        // ── Helper: dibujar tarjeta con borde redondeado ────
+        auto draw_card2 = [&](int x, int y, int w, int h) {
+          const int r = 10, t = 3;
+          it.filled_rectangle(x + r, y,         w - 2*r, t);
+          it.filled_rectangle(x + r, y + h - t, w - 2*r, t);
+          it.filled_rectangle(x,         y + r, t, h - 2*r);
+          it.filled_rectangle(x + w - t, y + r, t, h - 2*r);
+          it.filled_circle(x + r,     y + r,     r);
+          it.filled_circle(x + w - r, y + r,     r);
+          it.filled_circle(x + r,     y + h - r, r);
+          it.filled_circle(x + w - r, y + h - r, r);
+          it.filled_rectangle(x + t, y + t, w - 2*t, h - 2*t, COLOR_OFF);
+          it.filled_rectangle(x + t + 1, y + t + 1, 8, h - 2*t - 2);
         };
-        const char* months_es[] = {
-          "Enero","Febrero","Marzo","Abril","Mayo","Junio",
-          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
-        };
 
-        // Hora digital grande  (centrada en x=400, y=200)
-        // font_clock size=160: dos dígitos + dos puntos + dos dígitos ≈ 560px de ancho
-        char hora_buf[6];
-        snprintf(hora_buf, sizeof(hora_buf), "%02d:%02d", time_now.hour, time_now.minute);
-        it.printf(400, 200, id(font_clock), TextAlign::CENTER, "%s", hora_buf);
+        // ── Mitad superior: 2 tarjetas de potencia (W) ──────
+        // Cada tarjeta: ancho=358, alto=155
+        // col0 x=30  col1 x=412   gap=24   borde derecho=412+358=770 ✓
+        const int pw = 358, ph = 155;
+        const int px[2] = {30, 412};
+        const int py = 72;
 
-        // Línea decorativa debajo de la hora
-        it.filled_rectangle(80, 300, 640, 4);
+        // Tarjeta Producción
+        draw_card2(px[0], py, pw, ph);
+        it.printf(px[0]+28, py+14, id(font_small),  "Produciendo ahora");
+        // Valor grande centrado verticalmente
+        it.printf(px[0]+28, py+65, id(font_xlarge), "%s W", id(solar_potencia_inv).state.c_str());
 
-        // Día de semana + fecha (centrados en x=400, y=370)
-        // Ejemplo: "Lunes  14 Abril"
-        char fecha_buf[40];
-        snprintf(fecha_buf, sizeof(fecha_buf), "%s  %d %s",
-          days_es[time_now.day_of_week],
-          time_now.day_of_month,
-          months_es[time_now.month - 1]);
-        it.printf(400, 365, id(font_date_big), TextAlign::CENTER, "%s", fecha_buf);
+        // Tarjeta Consumo
+        draw_card2(px[1], py, pw, ph);
+        it.printf(px[1]+28, py+14, id(font_small),  "Consumiendo ahora");
+        it.printf(px[1]+28, py+65, id(font_xlarge), "%s W", id(solar_potencia_cons).state.c_str());
+
+        // ── Separador horizontal central ─────────────────────
+        it.filled_rectangle(30, 240, 740, 3);
+
+        // ── Mitad inferior: 3 tarjetas de energía (kWh) ─────
+        // Cada tarjeta: ancho=228, alto=155   gap=18
+        // 3*228 + 2*18 = 720   x_inicio=40   borde derecho=40+720=760 ✓
+        const int ew = 228, eh = 155;
+        const int ex[3] = {40, 286, 532};
+        const int ey = 252;
+
+        // Generado hoy (real)
+        draw_card2(ex[0], ey, ew, eh);
+        it.printf(ex[0]+22, ey+14, id(font_small),  "Generado hoy");
+        it.printf(ex[0]+22, ey+60, id(font_large),  "%s", id(solar_generado_hoy).state.c_str());
+        it.printf(ex[0]+22, ey+105, id(font_small), "kWh");
+
+        // Consumido hoy
+        draw_card2(ex[1], ey, ew, eh);
+        it.printf(ex[1]+22, ey+14, id(font_small),  "Consumido hoy");
+        it.printf(ex[1]+22, ey+60, id(font_large),  "%s", id(solar_consumido_hoy).state.c_str());
+        it.printf(ex[1]+22, ey+105, id(font_small), "kWh");
+
+        // Estimado hoy
+        draw_card2(ex[2], ey, ew, eh);
+        it.printf(ex[2]+22, ey+14, id(font_small),  "Estimado hoy");
+        it.printf(ex[2]+22, ey+60, id(font_large),  "%s", id(solar_estimado_hoy).state.c_str());
+        it.printf(ex[2]+22, ey+105, id(font_small), "kWh");
 
       }
