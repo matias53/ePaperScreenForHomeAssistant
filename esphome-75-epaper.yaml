@@ -106,68 +106,58 @@ script:
     mode: single          # si ya está corriendo, no encolar otro
     then:
       - lambda: |-
-          if (id(display_busy)) return;  // display ocupado, ignorar
           id(display_busy) = true;
+          id(screen_timer) = -8;  // bloquea 8s: timer debe llegar a 0 antes de próximo update
       - component.update: my_display
-      - lambda: |-
-          id(display_busy) = false;
 
 interval:
   - interval: 1s
     then:
       - lambda: |-
+          // ── Tick del timer ─────────────────────────────────────────
+          // screen_timer se usa también como cooldown post-refresh:
+          // al hacer update se pone en -8, sube cada segundo hasta 0,
+          // y recién entonces se habilita el próximo update.
+          id(screen_timer) += 1;
+
+          // Liberar busy cuando el timer salió del cooldown
+          if (id(display_busy) && id(screen_timer) >= 0) {
+            id(display_busy) = false;
+          }
+
           // ── Esperar primera actualización ──────────────────────────
           if (!id(first_update_done)) {
             if (id(wifi_status) == 1 && !id(ha_calendar_event_1).state.empty()) {
               id(first_update_done) = true;
-              id(screen_timer) = 0;
               id(update_display).execute();
             }
             return;
           }
+
+          // Bloquear todo update mientras display_busy
+          if (id(display_busy)) return;
 
           std::string sel = id(screen_selector).current_option();
 
-          // ── Modo fijo ──────────────────────────────────────────────
-          // El cambio de pantalla ya se hace en on_value del select.
-          // Aquí solo manejamos el refresco periódico del reloj.
+          // ── Modo fijo reloj: refresca cada 60s ────────────────────
           if (sel == "reloj") {
-            id(screen_timer) += 1;
             if (id(screen_timer) >= 60) {
-              if (!id(display_busy)) {
-                id(screen_timer) = 0;
-                id(update_display).execute();
-              }
-              // si busy, mantener timer alto para reintentar al próximo tick
-            }
-            return;
-          }
-
-          if (sel == "clima" || sel == "calendario") {
-            return;  // pantalla fija, sin refresco periódico necesario
-          }
-
-          // ── Modo "auto": alternancia normal ───────────────────────
-          id(screen_timer) += 1;
-
-          // Reloj activo en modo auto: también refresca cada 60s
-          if (id(current_screen) == 2 && id(screen_timer) >= 60) {
-            if (!id(display_busy)) {
-              id(screen_timer) = 0;
               id(update_display).execute();
             }
             return;
           }
 
+          // ── Modos fijos: sin refresco periódico ──────────────────
+          if (sel == "clima" || sel == "calendario" || sel == "solar") {
+            return;
+          }
+
+          // ── Modo auto: alterna todas las pantallas con interval_val ─
           int interval_val = (int)id(switch_interval).state;
 
           if (id(screen_timer) >= interval_val) {
-            if (!id(display_busy)) {
-              id(screen_timer) = 0;
-              id(current_screen) = (id(current_screen) + 1) % 4;
-              id(update_display).execute();
-            }
-            // si busy, mantener timer alto para reintentar al próximo tick
+            id(current_screen) = (id(current_screen) + 1) % 4;
+            id(update_display).execute();
           }
 
 image:
@@ -504,6 +494,37 @@ display:
         }
 
       // ══════════════════════════════════════════════════════
+      //  PANTALLA 2 — RELOJ
+      //  Display: 800 × 480 px
+      //  Hora grande centrada en y≈200, fecha mediana en y≈360
+      // ══════════════════════════════════════════════════════
+      } else if (id(current_screen) == 2) {
+
+        auto time_now = id(homeassistant_time).now();
+
+        const char* days_es[] = {
+          "Sabado","Domingo","Lunes","Martes",
+          "Miercoles","Jueves","Viernes"
+        };
+        const char* months_es[] = {
+          "Enero","Febrero","Marzo","Abril","Mayo","Junio",
+          "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"
+        };
+
+        char hora_buf[6];
+        snprintf(hora_buf, sizeof(hora_buf), "%02d:%02d", time_now.hour, time_now.minute);
+        it.printf(400, 200, id(font_clock), TextAlign::CENTER, "%s", hora_buf);
+
+        it.filled_rectangle(80, 300, 640, 4);
+
+        char fecha_buf[40];
+        snprintf(fecha_buf, sizeof(fecha_buf), "%s  %d %s",
+          days_es[time_now.day_of_week],
+          time_now.day_of_month,
+          months_es[time_now.month - 1]);
+        it.printf(400, 365, id(font_date_big), TextAlign::CENTER, "%s", fecha_buf);
+
+      // ══════════════════════════════════════════════════════
       //  PANTALLA 3 — SOLAR
       //  Display: 800 × 480 px
       //  Superior (y=0..235):  2 tarjetas anchas — potencia W
@@ -558,16 +579,16 @@ display:
         const int ex[3] = {40, 286, 532};
         const int ey = 252;
 
-        // Generado hoy (real)
+        // Consumido hoy
         draw_card2(ex[0], ey, ew, eh);
-        it.printf(ex[0]+22, ey+14, id(font_small),  "Generado hoy");
-        it.printf(ex[0]+22, ey+60, id(font_large),  "%s", id(solar_generado_hoy).state.c_str());
+        it.printf(ex[0]+22, ey+14, id(font_small),  "Consumido hoy");
+        it.printf(ex[0]+22, ey+60, id(font_large),  "%s", id(solar_consumido_hoy).state.c_str());
         it.printf(ex[0]+22, ey+105, id(font_small), "kWh");
 
-        // Consumido hoy
+        // Generado hoy (real)
         draw_card2(ex[1], ey, ew, eh);
-        it.printf(ex[1]+22, ey+14, id(font_small),  "Consumido hoy");
-        it.printf(ex[1]+22, ey+60, id(font_large),  "%s", id(solar_consumido_hoy).state.c_str());
+        it.printf(ex[1]+22, ey+14, id(font_small),  "Generado hoy");
+        it.printf(ex[1]+22, ey+60, id(font_large),  "%s", id(solar_generado_hoy).state.c_str());
         it.printf(ex[1]+22, ey+105, id(font_small), "kWh");
 
         // Estimado hoy
@@ -577,3 +598,4 @@ display:
         it.printf(ex[2]+22, ey+105, id(font_small), "kWh");
 
       }
+
